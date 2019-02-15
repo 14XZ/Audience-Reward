@@ -1,0 +1,138 @@
+---
+title: "Cleaning Weibo Data"
+author: "X. Zhang"
+date: "February 14, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Fear or Anger: a quasi-experimental approach to the analysis of big data on emotional responses to international conflict escalation
+
+##Question and Theory:
+
+When an international conflict escalates, how does the domestic public respond emotionally? The answer to this question has significant bearings on the domestic politics of international bargaining, particularly the generation of audience cost signals. In the context of international conflict, two negative emotions, fear and anger, are particularly relevant. While fear motivates retreating and avoidance actions, anger motivates offensive action against an adversary (Lerner & Keltner, 2001; Mackie, Devos, & Smith, 2000). If the domestic public of a nation responds to the escalation of conflict with fear, it would weaken the state’s ability to signal resolve, consequently undermining its bargaining position. However, if the public responds to an escalation of international conflicts with anger, such public anger could help a state generate credible audience signal, achieving a stronger bargaining position in international disputes. Drawing on intergroup emotions theory (IET), I propose a first image reversed theory—Individual-level emotional response to escalation is shaped by one’s perception of national power. Specifically, I expect an individual confident in the strength and unity of one’s own country to express anger. Conversely, individuals who lack confidence in national power or preoccupied with domestic divisions will express more fear. 
+
+##Research Design:
+
+I hope to test this theory by applying a quasi-experimental approach to the analysis of the organic expression of emotions on social media. The empirical investigation proceeds in two stages. In the first measurement stage, the researcher will manually code short media posts based on the emotion conveyed as well as other relevant covariates such as expression of confidence in national strength and unity. The manually coded data is then used as training data for a machine learning model, which classifies the emotion of a massive amount of social media posts. In the second analysis stage, the difference of public emotion in the pre-escalation and post-escalation period is compared using an interrupted time series (ITS) analysis, treating the pre-escalation data as the control group and post-escalation data as the treatment group. 
+
+##Data:
+
+The project will use China’s Twitter-like Weibo data. The specific dataset used contains 220 million posts by randomly sampled users who had more than 1000 followers in 2012, including censored posts (Fu & Chau, 2013). China experienced a number of escalation events in 2012, including the China-Philippine Huangyan Islets/Scarborough Shoal standoff, and Japan’s nationalization of Diaoyu/Senkaku Islands. Both escalations are landmark events in the recent intensification of geopolitical conflicts in Asia, attracting significant public attention and protests across China, which offered the opportunity to compare the difference of emotion before and after two salient escalation events. Though Weibo user is not a representative sample of the population, it is an important platform of political expression and collective action in the country, making it a valuable data source. Moreover, the timely measurement of emotional response to real-world conflict escalation with a national representative sample is challenging under any circumstance. Thus, the massive data volume of social media posts provides an invaluable source of organic expression that would not only enable quasi-experimental comparison across time but also matching comparison of posts on confounding covariates, including within-subject change across time. Furthermore, comparison of emotions in censored and uncensored posts offered a unique window into how an authoritarian state’s management of public emotion enhances or undermines its ability to generate credible audience cost signal. Lastly, methodological lessons drawn from applying this approach of measurement and analysis can be applied to other social media data such as Twitter and Facebook posts.
+
+
+
+```{r load packages, echo=FALSE} 
+library(tidyverse)
+library(readr)
+library(lubridate) # for dates
+library(tm)# for text mining
+library(tmcn) # for text minning in Chinese
+library(SnowballC) # for text stemming
+library(wordcloud) # word-cloud generator 
+library(RColorBrewer) # color palettes
+```
+
+
+```{r Loading Data, echo=FALSE}
+randomusers <- read_csv("randomusers.csv")
+userdata <- read_csv("userdata.csv")
+
+week13 <- read_csv("week13.csv") # starting 2012-03-26
+week17 <- read_csv("week17.csv") # starting 2012-04-23
+
+```
+
+```{r First Glance at data structure: userdata}
+dim(userdata)
+summary(userdata)
+head(userdata)
+length(unique(userdata$uid))
+
+```
+For year 2012, there are 14,388,381 unique users in the data. Each user have four covariates, their unique user id, the province they are located, self-reported gender, and if the user is a officially varified account.
+
+```{r First Glance at data structure: week17}
+summary(week17)
+head(week17)
+class(week17$created_at)
+```
+There are 52 weeks of data in total, each week is stored in a different dataset. here i present sme summary statistics for week 17 (the onset of the Scarborough Shoal standoff) as an example. Each observation is a twitter-like post, There are 3,636,661 11 posts in week 17. Each post has by 11 covariates:
+
+1. mid - Unique pseudo message ID
+
+2. retweeted_status_mid - Pseudo message ID of the original message (Only available if the row of interest is a retweet)
+
+3. uid - Pseudo user ID
+
+4. retweeted_uid - Pseudo user ID of the original poster (Only available if the row of interest is a retweet)
+
+4. source - The application name of the client program
+
+5. image - With image? (1= Yes, 0=No)
+
+6. text - body of the message. Any address handle (@xxxx:) is replaced by either the pseudo user ID or ukn (uknown)
+
+7. geo - GIS information. Please refer to the Sina Weibo API documentation: http://goo.gl/Um8SS
+
+8. created_at - Original posting time
+
+9. deleted_last_seen - The last seen time before this message was missing from the user timeline
+
+10. permission_denied - 'permission denied' status is marked when the message was found missing in the timeline and the API return message was 'permission denied'
+
+11. deleted_last_seen and permission_denied
+
+```{r, exploratory analysis on posts}
+week17%>%
+  group_by(day(created_at), hour(created_at))%>%
+  summarise(numb_post = length(unique(mid))) %>%
+  ggplot(aes(x= `hour(created_at)`, y= numb_post))+geom_point(col="navy")+facet_grid(~`day(created_at)`)+labs(x = "Hour on each day between 23 and 29 April", y = "number of posts")+ theme(legend.position = "none")
+
+```
+
+The most critical variable for my research is variable 6, the body of the post. Which will be scored/classified based on the emotion they expressed and their relevance to conflict escalation events. Given that i plan to conduct an interrupted time series analysis, varaible 8, created_at - Original posting time will be the running/forceing variable.
+
+```{R show some text}
+text_example <- sample(week17$text, 10000)
+text_example <- Corpus(VectorSource(text_example))
+#Transformation is performed using tm_map() function to replace, for example, special characters from the text.
+#Replacing “/”, “@” and “|” with space:
+toSpace <- content_transformer(function (x , pattern ) gsub(pattern, " ", x))
+text_example <- tm_map(text_example, toSpace, "/")
+text_example <- tm_map(text_example, toSpace, "@")
+text_example <- tm_map(text_example, toSpace, "\\|")
+text_example <- tm_map(text_example, removeWords, c("ukn:", "转发微博"，"http","分享图片")) 
+# Eliminate extra white spaces
+text_example <- tm_map(text_example, stripWhitespace)
+# Text stemming
+text_example <- tm_map(text_example, stemDocument) #tm's stemdocument do not seem to work on Chinese text
+
+#creating term-document Martix ()
+tdm_example <- createTDM(text_example, language = c("zh", "en"), tokenize = NULL, removePunctuation = TRUE, removeNumbers = TRUE, removeStopwords = TRUE)
+
+m <- as.matrix(tdm_example)
+v <- sort(rowSums(m),decreasing=TRUE)
+d <- data.frame(word = names(v),freq=v)
+
+#wordcloud
+set.seed(811)
+wordcloud(words = d$word, freq = d$freq, min.freq = 1,
+          max.words=200, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(8, "Dark2"))
+
+```
+
+Variable 9 and 10 measure if a message is censored, which offers an interesting window into how state manage public emotion.
+
+```{r, exploratory analysis on cesored posts}
+week17%>%
+  filter(permission_denied == TRUE)%>%
+  group_by(day(created_at), hour(created_at))%>%
+  summarise(numb_post = length(unique(mid))) %>%
+  ggplot(aes(x= `hour(created_at)`, y= numb_post))+geom_point(col="red")+facet_grid(~`day(created_at)`) +labs(x = "Hour on each day between 23 and 29 April", y = "number of censored posts")
+
+```
